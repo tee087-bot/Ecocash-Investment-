@@ -1,10 +1,20 @@
 import { Router } from 'express'
 import multer from 'multer'
 import path from 'path'
+import fs from 'fs'
 import { getDeposits, submitDeposit, uploadReceipt, approveDeposit, rejectDeposit, updateDepositStatus } from '../controllers/depositController.js'
 import { authenticateToken } from '../middleware/auth.js'
 
 const router = Router()
+
+// Ensure upload directory exists
+const getUploadPath = () => {
+  const uploadPath = process.env.VERCEL || process.env.RENDER ? '/tmp/uploads' : path.join(process.cwd(), '..', 'public', 'uploads')
+  if (!fs.existsSync(uploadPath)) {
+    fs.mkdirSync(uploadPath, { recursive: true })
+  }
+  return uploadPath
+}
 
 const botSecret = process.env.BOT_SECRET || 'ecocash_bot_secret_2024'
 
@@ -19,8 +29,7 @@ const botAuthMiddleware = (req: any, res: any, next: any): void => {
 
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => {
-    const uploadPath = process.env.VERCEL ? '/tmp/uploads' : path.join(process.cwd(), '..', 'public', 'uploads')
-    cb(null, uploadPath)
+    cb(null, getUploadPath())
   },
   filename: (_req, file, cb) => {
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9)
