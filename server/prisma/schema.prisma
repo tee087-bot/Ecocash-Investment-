@@ -168,6 +168,8 @@ model Withdrawal {
   investmentId    String
   investment      Investment   @relation(fields: [investmentId], references: [id], onDelete: Cascade)
   amount          Float
+  balanceSource   String       @default("INVESTMENT") // INVESTMENT or REFERRAL
+  feeAmount       Float        @default(0)
   method          String
   cardNumber      String?
   cardholderName  String?

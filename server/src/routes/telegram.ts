@@ -297,29 +297,42 @@ const handleReferralClaim = async (claimId: string, adminChatId: number, approve
 
 const handleApproveUser = async (userId: string, adminChatId: number) => {
   try {
-    const user = await prisma.user.update({
-      where: { id: userId },
-      data: { isActive: true, isVerified: true, kycStatus: 'APPROVED' },
-      select: { id: true, telegramChatId: true, referredById: true },
-    })
-    
-    // Give referral bonus when referred user is approved
-    if (user.referredById) {
-      const incremented = await prisma.user.updateMany({
-        where: { id: user.referredById, referralCycleCount: { lt: 20 } },
-        data: { referralCycleCount: { increment: 1 }, referralBalance: { increment: 5 } },
+    const user = await prisma.$transaction(async (tx) => {
+      const approved = await tx.user.updateMany({
+        where: { id: userId, isActive: false },
+        data: { isActive: true, isVerified: true, kycStatus: 'APPROVED' },
       })
-      if (incremented.count) {
-        const updatedReferrer = await prisma.user.findUnique({
-          where: { id: user.referredById },
-          select: { referralCycleCount: true },
+      if (!approved.count) return null
+
+      const approvedUser = await tx.user.findUnique({
+        where: { id: userId },
+        select: { id: true, telegramChatId: true, referredById: true },
+      })
+      if (!approvedUser) throw new Error('Approved user not found')
+
+      if (approvedUser.referredById) {
+        const incremented = await tx.user.updateMany({
+          where: { id: approvedUser.referredById, referralCycleCount: { lt: 20 } },
+          data: { referralCycleCount: { increment: 1 }, referralBalance: { increment: 5 } },
         })
-        if ((updatedReferrer?.referralCycleCount || 0) >= 20) {
-          await prisma.referralBonus.create({
-            data: { referrerId: user.referredById, beneficiaryId: user.referredById, eligibleAt: new Date() },
+        if (incremented.count) {
+          const updatedReferrer = await tx.user.findUnique({
+            where: { id: approvedUser.referredById },
+            select: { referralCycleCount: true },
           })
+          if (updatedReferrer?.referralCycleCount === 20) {
+            await tx.referralBonus.create({
+              data: { referrerId: approvedUser.referredById, beneficiaryId: approvedUser.referredById, eligibleAt: new Date() },
+            })
+          }
         }
       }
+      return approvedUser
+    })
+
+    if (!user) {
+      await sendMessage(adminChatId, 'ℹ️ This user is already approved or cannot be approved.')
+      return
     }
     
     if (user?.telegramChatId) {
@@ -339,29 +352,44 @@ const handleRejectUser = async (userId: string, adminChatId: number) => {
 
 const handleApproveKYC = async (userId: string, adminChatId: number) => {
   try {
-    const user = await prisma.user.update({
-      where: { id: userId },
-      data: { kycStatus: 'APPROVED', isVerified: true, isActive: true },
-      select: { id: true, telegramChatId: true, referredById: true },
-    })
-    
-    // Give referral bonus when referred user KYC is approved
-    if (user?.referredById) {
-      const incremented = await prisma.user.updateMany({
-        where: { id: user.referredById, referralCycleCount: { lt: 20 } },
-        data: { referralCycleCount: { increment: 1 }, referralBalance: { increment: 5 } },
+    // KYC may be reviewed more than once. Only the first transition from an
+    // inactive account can complete a referral, preventing duplicate rewards.
+    const user = await prisma.$transaction(async (tx) => {
+      const approved = await tx.user.updateMany({
+        where: { id: userId, isActive: false, kycStatus: 'SUBMITTED' },
+        data: { kycStatus: 'APPROVED', isVerified: true, isActive: true },
       })
-      if (incremented.count) {
-        const updatedReferrer = await prisma.user.findUnique({
-          where: { id: user.referredById },
-          select: { referralCycleCount: true },
+      if (!approved.count) return null
+
+      const approvedUser = await tx.user.findUnique({
+        where: { id: userId },
+        select: { id: true, telegramChatId: true, referredById: true },
+      })
+      if (!approvedUser) throw new Error('Approved user not found')
+
+      if (approvedUser.referredById) {
+        const incremented = await tx.user.updateMany({
+          where: { id: approvedUser.referredById, referralCycleCount: { lt: 20 } },
+          data: { referralCycleCount: { increment: 1 }, referralBalance: { increment: 5 } },
         })
-        if ((updatedReferrer?.referralCycleCount || 0) >= 20) {
-          await prisma.referralBonus.create({
-            data: { referrerId: user.referredById, beneficiaryId: user.referredById, eligibleAt: new Date() },
+        if (incremented.count) {
+          const updatedReferrer = await tx.user.findUnique({
+            where: { id: approvedUser.referredById },
+            select: { referralCycleCount: true },
           })
+          if (updatedReferrer?.referralCycleCount === 20) {
+            await tx.referralBonus.create({
+              data: { referrerId: approvedUser.referredById, beneficiaryId: approvedUser.referredById, eligibleAt: new Date() },
+            })
+          }
         }
       }
+      return approvedUser
+    })
+
+    if (!user) {
+      await sendMessage(adminChatId, 'ℹ️ This KYC submission was already reviewed or is not ready for approval.')
+      return
     }
     
     if (user?.telegramChatId) {
@@ -533,25 +561,25 @@ const handlePaidWithdrawal = async (withdrawalId: string, adminChatId: number) =
     }
     
     const feeMatch = withdrawal.transactionHash?.match(/Fee: ([\d.]+)/)
-    const fee = feeMatch ? Number(feeMatch[1]) : getWithdrawalFee(Number(withdrawal.amount))
+    const fee = Number(withdrawal.feeAmount) || (feeMatch ? Number(feeMatch[1]) : getWithdrawalFee(Number(withdrawal.amount)))
     const totalDeduct = Number(withdrawal.amount) + fee
 
-    const result = await prisma.withdrawal.updateMany({
-      where: { id: withdrawalId, status: 'WITHDRAWAL_PENDING' },
-      data: { status: 'WITHDRAWN', transactionHash: 'tx_' + Date.now() },
+    const paid = await prisma.$transaction(async (tx) => {
+      const result = await tx.withdrawal.updateMany({
+        where: { id: withdrawalId, status: 'WITHDRAWAL_PENDING', isVerified: true },
+        data: { status: 'WITHDRAWN', transactionHash: 'tx_' + Date.now() },
+      })
+      if (!result.count) return 'STATE_CHANGED' as const
+
+      const deducted = withdrawal.balanceSource === 'REFERRAL'
+        ? await tx.user.updateMany({ where: { id: withdrawal.userId, walletBalance: { gte: totalDeduct } }, data: { walletBalance: { decrement: totalDeduct } } })
+        : await tx.investment.updateMany({ where: { id: withdrawal.investmentId, currentBalance: { gte: totalDeduct } }, data: { currentBalance: { decrement: totalDeduct } } })
+      if (!deducted.count) throw new Error('INSUFFICIENT_SOURCE_BALANCE')
+      return 'PAID' as const
     })
-    if (result.count === 0) {
+    if (paid === 'STATE_CHANGED') {
       await sendMessage(adminChatId, 'ℹ️ This withdrawal was already processed or is no longer pending.')
       return
-    }
-    
-    if (withdrawal?.investmentId) {
-      await prisma.investment.update({
-        where: { id: withdrawal.investmentId },
-        data: {
-          currentBalance: { decrement: totalDeduct },
-        },
-      })
     }
     
     if (withdrawal?.user?.telegramChatId) {

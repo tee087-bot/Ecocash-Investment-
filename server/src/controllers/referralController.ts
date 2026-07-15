@@ -8,7 +8,7 @@ const REQUIRED_REFERRALS = 20
 export const getReferralSummary = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const userId = req.user!.id
-    const [user, bonuses, claims] = await Promise.all([
+    const [user, bonuses, claims, confirmedDepositCount] = await Promise.all([
       prisma.user.findUnique({
         where: { id: userId },
         select: { referralCode: true, referralCycleCount: true, referralBalance: true, walletBalance: true },
@@ -24,6 +24,9 @@ export const getReferralSummary = async (req: AuthRequest, res: Response): Promi
         orderBy: { createdAt: 'desc' },
         take: 10,
       }),
+      prisma.deposit.count({
+        where: { userId, status: 'PAYMENT_RECEIVED' },
+      }),
     ])
 
     res.json({
@@ -37,6 +40,7 @@ export const getReferralSummary = async (req: AuthRequest, res: Response): Promi
         walletBalance: user?.walletBalance || 0,
         eligibleAmount: bonuses._sum.amount || 0,
         eligibleBonusCount: bonuses._count,
+        canWithdrawReferralRewards: confirmedDepositCount > 0,
         claims,
       },
     })

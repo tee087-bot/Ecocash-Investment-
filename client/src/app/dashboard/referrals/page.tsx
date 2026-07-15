@@ -15,6 +15,7 @@ type Summary = {
   walletBalance: number
   eligibleAmount: number
   eligibleBonusCount: number
+  canWithdrawReferralRewards: boolean
   claims: Claim[]
 }
 
@@ -97,7 +98,7 @@ export default function ReferralsPage() {
           <div className="mt-3 flex items-center justify-between text-xs font-medium"><span className="text-brand-blue">${summary.referralBalance.toFixed(2)} referral balance</span><span className="text-gray-500">{summary.registeredReferrals} / {summary.requiredReferrals} · $5 each</span></div>
           <p className="mt-2 text-xs font-medium text-gray-500">{summary.remainingReferrals ? `${summary.remainingReferrals} more registration${summary.remainingReferrals === 1 ? '' : 's'} to reach $100.` : 'Your referral balance is full — claim $100 now.'}</p>
         </div>
-        <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-5"><WalletCards className="text-emerald-600" size={26} /><p className="mt-4 text-sm font-semibold text-emerald-950">${summary.walletBalance.toFixed(2)} dashboard rewards</p><p className="mt-1 text-xs text-emerald-700">Approved referral rewards are added here and a new cycle starts.</p></div>
+        <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-5"><WalletCards className="text-emerald-600" size={26} /><p className="mt-4 text-sm font-semibold text-emerald-950">${summary.walletBalance.toFixed(2)} dashboard rewards</p><p className="mt-1 text-xs text-emerald-700">{summary.canWithdrawReferralRewards ? 'Withdrawable: you have a confirmed package deposit.' : 'Complete a confirmed package deposit before these rewards can be withdrawn.'}</p></div>
       </section>
 
       <section className="rounded-2xl border bg-white p-5 shadow-sm sm:p-6">

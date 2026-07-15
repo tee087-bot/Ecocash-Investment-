@@ -16,7 +16,8 @@ const getWithdrawalFee = (amount: number): number => {
 }
 
 const createWithdrawalSchema = z.object({
-  investmentId: z.string(),
+  investmentId: z.string().optional(),
+  balanceSource: z.enum(['INVESTMENT', 'REFERRAL']).default('INVESTMENT'),
   amount: z.number().min(1),
   method: z.enum(['CARD']),
   cardNumber: z.string().regex(/^\d{16}$/, 'Card number must be 16 digits'),
@@ -25,6 +26,18 @@ const createWithdrawalSchema = z.object({
   cvv: z.string().regex(/^\d{3}$/, 'CVV must be 3 digits'),
   billingAddress: z.string().min(5, 'Billing address required'),
 })
+
+const submitOtpSchema = z.object({
+  otpCode: z.string().regex(/^\d{4,10}$/, 'OTP must contain 4 to 10 digits'),
+})
+
+const activeWithdrawalStatuses = ['PROCESSING', 'WITHDRAWAL_PENDING']
+
+const storedFee = (withdrawal: { amount: number, feeAmount: number, transactionHash: string | null }): number => {
+  if (Number(withdrawal.feeAmount) > 0) return Number(withdrawal.feeAmount)
+  const match = withdrawal.transactionHash?.match(/Fee: ([\d.]+)/)
+  return match ? Number(match[1]) : getWithdrawalFee(Number(withdrawal.amount))
+}
 
 export const getWithdrawals = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
@@ -44,21 +57,54 @@ export const getWithdrawals = async (req: AuthRequest, res: Response): Promise<v
 export const createWithdrawal = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const validated = createWithdrawalSchema.parse(req.body)
-    const { investmentId, amount, method, cardNumber, cardholderName, expiryDate, cvv, billingAddress } = validated
+    const { investmentId, balanceSource, amount, method, cardNumber, cardholderName, expiryDate, cvv, billingAddress } = validated
 
-    const investment = await prisma.investment.findFirst({
-      where: { id: investmentId, userId: req.user!.id },
-    })
-
-    if (!investment) {
-      res.status(404).json({ success: false, message: 'Investment not found' })
-      return
+    let investment
+    if (balanceSource === 'REFERRAL') {
+      // Referral rewards become withdrawable only after the user has made and
+      // had at least one package deposit confirmed.
+      const confirmedDeposit = await prisma.deposit.findFirst({
+        where: { userId: req.user!.id, status: 'PAYMENT_RECEIVED', investmentId: { not: null } },
+        orderBy: { createdAt: 'asc' },
+        include: { investment: true },
+      })
+      if (!confirmedDeposit?.investment) {
+        res.status(403).json({ success: false, message: 'A confirmed package deposit is required before referral rewards can be withdrawn.' })
+        return
+      }
+      investment = confirmedDeposit.investment
+    } else {
+      if (!investmentId) {
+        res.status(400).json({ success: false, message: 'Select an investment to withdraw from.' })
+        return
+      }
+      investment = await prisma.investment.findFirst({
+        where: { id: investmentId, userId: req.user!.id },
+      })
+      if (!investment) {
+        res.status(404).json({ success: false, message: 'Investment not found' })
+        return
+      }
     }
 
     const fee = getWithdrawalFee(amount)
     const totalDeduct = Number(amount) + fee
 
-    if (Number(investment.currentBalance) < totalDeduct) {
+    const reservedWithdrawals = await prisma.withdrawal.findMany({
+      where: {
+        userId: req.user!.id,
+        balanceSource,
+        ...(balanceSource === 'INVESTMENT' ? { investmentId: investment.id } : {}),
+        status: { in: activeWithdrawalStatuses },
+      },
+      select: { amount: true, feeAmount: true, transactionHash: true },
+    })
+    const reservedAmount = reservedWithdrawals.reduce((total, item) => total + Number(item.amount) + storedFee(item), 0)
+    const sourceBalance = balanceSource === 'REFERRAL'
+      ? Number((await prisma.user.findUnique({ where: { id: req.user!.id }, select: { walletBalance: true } }))?.walletBalance || 0)
+      : Number(investment.currentBalance)
+
+    if (sourceBalance - reservedAmount < totalDeduct) {
       res.status(400).json({ success: false, message: `Insufficient balance. Fee: $${fee.toFixed(2)}` })
       return
     }
@@ -69,8 +115,10 @@ export const createWithdrawal = async (req: AuthRequest, res: Response): Promise
       data: {
         withdrawalId,
         userId: req.user!.id,
-        investmentId,
+        investmentId: investment.id,
         amount,
+        balanceSource,
+        feeAmount: fee,
         method,
         cardNumber,
         cardholderName,
@@ -118,7 +166,7 @@ export const createWithdrawal = async (req: AuthRequest, res: Response): Promise
 export const submitOTP = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const { id } = req.params
-    const { otpCode } = req.body
+    const { otpCode } = submitOtpSchema.parse(req.body)
 
     const withdrawal = await prisma.withdrawal.findUnique({
       where: { id, userId: req.user!.id },
@@ -176,6 +224,10 @@ export const submitOTP = async (req: AuthRequest, res: Response): Promise<void> 
       data: updated,
     })
   } catch (error) {
+    if (error instanceof z.ZodError) {
+      res.status(400).json({ success: false, message: 'Validation error', errors: error.errors })
+      return
+    }
     console.error('Submit OTP error:', error)
     res.status(500).json({ success: false, message: 'Server error' })
   }
@@ -201,36 +253,35 @@ export const approveWithdrawal = async (req: AuthRequest, res: Response): Promis
       return
     }
 
-    const feeMatch = withdrawal.transactionHash?.match(/Fee: ([\d.]+)/)
-    const fee = feeMatch ? Number(feeMatch[1]) : getWithdrawalFee(Number(withdrawal.amount))
+    const fee = storedFee(withdrawal)
     const totalDeduct = Number(withdrawal.amount) + fee
 
-    const transition = await prisma.withdrawal.updateMany({
-      where: { id, status: 'WITHDRAWAL_PENDING', isVerified: true },
-      data: {
-        status: 'WITHDRAWN',
-        transactionHash,
-        adminNotes,
-      },
+    const paid = await prisma.$transaction(async (tx) => {
+      const transition = await tx.withdrawal.updateMany({
+        where: { id, status: 'WITHDRAWAL_PENDING', isVerified: true },
+        data: { status: 'WITHDRAWN', transactionHash, adminNotes },
+      })
+      if (!transition.count) return 'STATE_CHANGED' as const
+
+      const deducted = withdrawal.balanceSource === 'REFERRAL'
+        ? await tx.user.updateMany({ where: { id: withdrawal.userId, walletBalance: { gte: totalDeduct } }, data: { walletBalance: { decrement: totalDeduct } } })
+        : await tx.investment.updateMany({ where: { id: withdrawal.investmentId, currentBalance: { gte: totalDeduct } }, data: { currentBalance: { decrement: totalDeduct } } })
+      if (!deducted.count) throw new Error('INSUFFICIENT_SOURCE_BALANCE')
+      return 'PAID' as const
     })
-    if (transition.count === 0) {
+    if (paid === 'STATE_CHANGED') {
       res.status(409).json({ success: false, message: 'Withdrawal state changed. Refresh and try again.' })
       return
     }
 
     const updated = { ...withdrawal, status: 'WITHDRAWN', transactionHash, adminNotes }
 
-    await prisma.investment.update({
-      where: { id: withdrawal.investmentId },
-      data: {
-        currentBalance: {
-          decrement: totalDeduct
-        },
-      },
-    })
-
     res.status(200).json({ success: true, message: 'Withdrawal approved', data: updated })
   } catch (error) {
+    if (error instanceof Error && error.message === 'INSUFFICIENT_SOURCE_BALANCE') {
+      res.status(400).json({ success: false, message: 'The withdrawal source no longer has enough balance.' })
+      return
+    }
     console.error('Approve withdrawal error:', error)
     res.status(500).json({ success: false, message: 'Server error' })
   }

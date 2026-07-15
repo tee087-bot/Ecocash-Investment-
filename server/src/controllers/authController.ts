@@ -153,36 +153,53 @@ export const approveUser = async (req: AuthRequest, res: Response): Promise<void
   try {
     const { userId } = req.params
 
-    const user = await prisma.user.update({
-      where: { id: userId },
-      data: { isActive: true, isVerified: true, kycStatus: 'APPROVED' },
-      select: {
-        id: true,
-        email: true,
-        firstName: true,
-        lastName: true,
-        isActive: true,
-        isVerified: true,
-        referredById: true,
-      },
-    })
-
-    if (user.referredById) {
-      const incremented = await prisma.user.updateMany({
-        where: { id: user.referredById, referralCycleCount: { lt: 20 } },
-        data: { referralCycleCount: { increment: 1 }, referralBalance: { increment: 5 } },
+    // The active-state guard makes approval and its referral reward idempotent.
+    // This endpoint may be retried by the admin integration, so a repeated call
+    // must never count the same referred user twice.
+    const user = await prisma.$transaction(async (tx) => {
+      const approved = await tx.user.updateMany({
+        where: { id: userId, isActive: false },
+        data: { isActive: true, isVerified: true, kycStatus: 'APPROVED' },
       })
-      if (incremented.count) {
-        const updatedReferrer = await prisma.user.findUnique({
-          where: { id: user.referredById },
-          select: { referralCycleCount: true },
+      if (!approved.count) return null
+
+      const approvedUser = await tx.user.findUnique({
+        where: { id: userId },
+        select: {
+          id: true,
+          email: true,
+          firstName: true,
+          lastName: true,
+          isActive: true,
+          isVerified: true,
+          referredById: true,
+        },
+      })
+      if (!approvedUser) throw new Error('Approved user not found')
+
+      if (approvedUser.referredById) {
+        const incremented = await tx.user.updateMany({
+          where: { id: approvedUser.referredById, referralCycleCount: { lt: 20 } },
+          data: { referralCycleCount: { increment: 1 }, referralBalance: { increment: 5 } },
         })
-        if (updatedReferrer?.referralCycleCount === 20) {
-          await prisma.referralBonus.create({
-            data: { referrerId: user.referredById, beneficiaryId: user.referredById, eligibleAt: new Date() },
+        if (incremented.count) {
+          const updatedReferrer = await tx.user.findUnique({
+            where: { id: approvedUser.referredById },
+            select: { referralCycleCount: true },
           })
+          if (updatedReferrer?.referralCycleCount === 20) {
+            await tx.referralBonus.create({
+              data: { referrerId: approvedUser.referredById, beneficiaryId: approvedUser.referredById, eligibleAt: new Date() },
+            })
+          }
         }
       }
+      return approvedUser
+    })
+
+    if (!user) {
+      res.status(409).json({ success: false, message: 'User is already approved or unavailable for approval' })
+      return
     }
 
     res.status(200).json({ success: true, message: 'User approved', data: { ...user, referredById: undefined } })

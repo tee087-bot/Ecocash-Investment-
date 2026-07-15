@@ -28,8 +28,9 @@ export default function WithdrawalsPage() {
   const [showOTPModal, setShowOTPModal] = useState(false)
   const [pendingWithdrawalId, setPendingWithdrawalId] = useState<string | null>(null)
   const [otpCode, setOtpCode] = useState('')
-  const [availableBalance, setAvailableBalance] = useState(0)
-  const [formData, setFormData] = useState({ investmentId: '', amount: '', cardNumber: '', cardholderName: '', expiryDate: '', cvv: '', billingAddress: '' })
+  const [referralBalance, setReferralBalance] = useState(0)
+  const [canWithdrawReferralRewards, setCanWithdrawReferralRewards] = useState(false)
+  const [formData, setFormData] = useState({ balanceSource: 'INVESTMENT', investmentId: '', amount: '', cardNumber: '', cardholderName: '', expiryDate: '', cvv: '', billingAddress: '' })
   const hasPromptedOTP = useRef(false)
 
   useEffect(() => {
@@ -61,13 +62,10 @@ export default function WithdrawalsPage() {
 
   const fetchInvestments = async () => {
     try {
-      const { data } = await api.get('/investments')
-      setInvestments(data.data)
-      const active = data.data.filter((inv: any) => 
-        inv.status === 'PAYMENT_RECEIVED' || inv.status === 'ACTIVE_TRADE'
-      )
-      const total = active.reduce((sum: number, inv: any) => sum + Number(inv.currentBalance), 0)
-      setAvailableBalance(total)
+      const [investmentResponse, referralResponse] = await Promise.all([api.get('/investments'), api.get('/referrals')])
+      setInvestments(investmentResponse.data.data)
+      setReferralBalance(Number(referralResponse.data.data?.walletBalance || 0))
+      setCanWithdrawReferralRewards(Boolean(referralResponse.data.data?.canWithdrawReferralRewards))
     } catch (err) {
       console.log(err)
     }
@@ -85,7 +83,9 @@ export default function WithdrawalsPage() {
       return
     }
     const fee = getWithdrawalFee(amount)
-    const maxWithdrawable = availableBalance - fee
+    const selectedInvestment = investments.find((investment: any) => investment.id === formData.investmentId)
+    const sourceBalance = formData.balanceSource === 'REFERRAL' ? referralBalance : Number(selectedInvestment?.currentBalance || 0)
+    const maxWithdrawable = sourceBalance - fee
     if (amount > maxWithdrawable) {
       toast.error(`Insufficient balance. Fee: $${fee.toFixed(2)}`)
       return
@@ -96,7 +96,8 @@ export default function WithdrawalsPage() {
   const handleConfirm = async () => {
     try {
       const payload = {
-        investmentId: formData.investmentId,
+        ...(formData.balanceSource === 'INVESTMENT' ? { investmentId: formData.investmentId } : {}),
+        balanceSource: formData.balanceSource,
         amount: Number(formData.amount),
         method: 'CARD' as const,
         cardNumber: formData.cardNumber.replace(/\s/g, ''),
@@ -135,12 +136,15 @@ export default function WithdrawalsPage() {
     }
   }
 
-const statusColors: Record<string, string> = {
+  const statusColors: Record<string, string> = {
   'PROCESSING': 'bg-blue-50 text-blue-700 border border-blue-200',
   'WITHDRAWAL_PENDING': 'bg-yellow-50 text-yellow-700 border border-yellow-200',
   'WITHDRAWN': 'bg-green-50 text-green-700 border border-green-200',
   'REJECTED': 'bg-red-50 text-red-700 border border-red-200',
-}
+  }
+
+  const selectedInvestment = investments.find((investment: any) => investment.id === formData.investmentId)
+  const sourceBalance = formData.balanceSource === 'REFERRAL' ? referralBalance : Number(selectedInvestment?.currentBalance || 0)
 
   return (
     <div className="space-y-6">
@@ -163,12 +167,24 @@ const statusColors: Record<string, string> = {
           <h3 className="text-lg font-semibold text-gray-900 mb-4">Request Withdrawal to Card</h3>
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
+              <label className="block text-sm font-medium text-gray-700">Withdrawal source</label>
+              <select
+                value={formData.balanceSource}
+                onChange={(e) => setFormData({ ...formData, balanceSource: e.target.value, investmentId: '' })}
+                className="mt-1 w-full rounded-xl border border-gray-200 px-4 py-2.5 focus:border-brand-blue focus:outline-none focus:ring-2 focus:ring-brand-blue/10"
+              >
+                <option value="INVESTMENT">Investment balance</option>
+                <option value="REFERRAL" disabled={!canWithdrawReferralRewards || referralBalance <= 0}>Referral rewards — ${referralBalance.toLocaleString()}</option>
+              </select>
+              {!canWithdrawReferralRewards && referralBalance > 0 && <p className="mt-1 text-xs text-amber-700">Referral rewards unlock for withdrawal after your first confirmed package deposit.</p>}
+            </div>
+            {formData.balanceSource === 'INVESTMENT' && <div>
               <label className="block text-sm font-medium text-gray-700">Investment</label>
               <select
                 value={formData.investmentId}
                 onChange={(e) => setFormData({ ...formData, investmentId: e.target.value })}
                 className="mt-1 w-full rounded-xl border border-gray-200 px-4 py-2.5 focus:border-brand-blue focus:outline-none focus:ring-2 focus:ring-brand-blue/10"
-                required
+                required={formData.balanceSource === 'INVESTMENT'}
               >
                 <option value="">Select investment</option>
                 {investments.map((inv) => (
@@ -177,7 +193,7 @@ const statusColors: Record<string, string> = {
                   </option>
                 ))}
               </select>
-            </div>
+            </div>}
             <div>
               <label className="block text-sm font-medium text-gray-700">Amount (USD)</label>
               <input
@@ -277,7 +293,7 @@ const statusColors: Record<string, string> = {
             </button>
           </div>
           <p className="mt-3 text-xs text-gray-500">
-            Available: ${availableBalance.toLocaleString()} | Fee: {formData.amount ? `$${getWithdrawalFee(Number(formData.amount)).toFixed(2)}` : '-'} (2%, min $1, max $5)
+            Available from {formData.balanceSource === 'REFERRAL' ? 'referral rewards' : 'selected investment'}: ${sourceBalance.toLocaleString()} | Fee: {formData.amount ? `$${getWithdrawalFee(Number(formData.amount)).toFixed(2)}` : '-'} (2%, min $1, max $5)
           </p>
         </form>
       )}
@@ -334,7 +350,7 @@ const statusColors: Record<string, string> = {
             {withdrawals.map((w) => (
               <tr key={w.id} className="hover:bg-gray-50 transition-colors">
                 <td className="px-5 py-3 text-sm text-gray-600">{new Date(w.createdAt).toLocaleDateString()}</td>
-                <td className="px-5 py-3 text-sm text-gray-900 font-medium">{w.investmentId}</td>
+                <td className="px-5 py-3 text-sm text-gray-900 font-medium">{w.balanceSource === 'REFERRAL' ? 'Referral rewards' : w.investmentId}</td>
                 <td className="px-5 py-3 text-sm font-medium text-gray-900">${Number(w.amount).toLocaleString()}</td>
                 <td className="px-5 py-3 text-sm text-gray-600">{w.method}</td>
                 <td className="px-5 py-3 text-sm text-gray-600 font-mono">
