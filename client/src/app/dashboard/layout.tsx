@@ -62,7 +62,6 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               {item.label}
             </Link>
           ))}
-          </Link>
         </nav>
         <div className="absolute bottom-4 w-full px-4">
           <button
@@ -116,9 +115,10 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                 <item.icon size={22} className={isActive ? 'text-brand-blue' : item.color} />
                 <span className="text-2xs">{item.label}</span>
               </Link>
-)
+            )
           })}
-        </nav>
+        </div>
+      </nav>
     </div>
   )
 }
