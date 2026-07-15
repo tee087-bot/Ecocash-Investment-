@@ -64,11 +64,13 @@ export const register = async (req: AuthRequest, res: Response): Promise<void> =
               isActive: false,
               kycStatus: 'PENDING',
             },
-})
-    } catch (error: any) {
-      // An extremely unlikely referral-code collision is safe to retry.
-      if (error?.code === 'P2002' && attempt < 2) return createUser(attempt + 1)
-      throw error
+          })
+          return createdUser
+        })
+      } catch (error: any) {
+        if (error?.code === 'P2002' && attempt < 2) return createUser(attempt + 1)
+        throw error
+      }
     }
 
     const createdUser = await createUser()
@@ -165,7 +167,6 @@ export const approveUser = async (req: AuthRequest, res: Response): Promise<void
       },
     })
 
-    // Give referral bonus only when referred user is verified
     if (user.referredById) {
       const incremented = await prisma.user.updateMany({
         where: { id: user.referredById, referralCycleCount: { lt: 20 } },
