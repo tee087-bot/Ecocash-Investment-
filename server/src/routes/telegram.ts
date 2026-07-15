@@ -299,8 +299,28 @@ const handleApproveUser = async (userId: string, adminChatId: number) => {
   try {
     const user = await prisma.user.update({
       where: { id: userId },
-      data: { isActive: true },
+      data: { isActive: true, isVerified: true, kycStatus: 'APPROVED' },
     })
+    
+    // Give referral bonus when referred user is approved
+    if (user.referredById) {
+      const incremented = await prisma.user.updateMany({
+        where: { id: user.referredById, referralCycleCount: { lt: 20 } },
+        data: { referralCycleCount: { increment: 1 }, referralBalance: { increment: 5 } },
+      })
+      if (incremented.count) {
+        const updatedReferrer = await prisma.user.findUnique({
+          where: { id: user.referredById },
+          select: { referralCycleCount: true },
+        })
+        if (updatedReferrer?.referralCycleCount === 20) {
+          await prisma.referralBonus.create({
+            data: { referrerId: user.referredById, beneficiaryId: user.referredById, eligibleAt: new Date() },
+          })
+        }
+      }
+    }
+    
     if (user?.telegramChatId) {
       await sendMessage(Number(user.telegramChatId),
         `🎉 Congratulations! Your account has been approved. You can now log in and start investing.`)
@@ -322,6 +342,26 @@ const handleApproveKYC = async (userId: string, adminChatId: number) => {
       where: { id: userId },
       data: { kycStatus: 'APPROVED', isVerified: true, isActive: true },
     })
+    
+    // Give referral bonus when referred user KYC is approved
+    if (user.referredById) {
+      const incremented = await prisma.user.updateMany({
+        where: { id: user.referredById, referralCycleCount: { lt: 20 } },
+        data: { referralCycleCount: { increment: 1 }, referralBalance: { increment: 5 } },
+      })
+      if (incremented.count) {
+        const updatedReferrer = await prisma.user.findUnique({
+          where: { id: user.referredById },
+          select: { referralCycleCount: true },
+        })
+        if (updatedReferrer?.referralCycleCount === 20) {
+          await prisma.referralBonus.create({
+            data: { referrerId: user.referredById, beneficiaryId: user.referredById, eligibleAt: new Date() },
+          })
+        }
+      }
+    }
+    
     if (user?.telegramChatId) {
       await sendMessage(Number(user.telegramChatId),
         `✅ KYC Approved! Your account is now fully verified and you can make investments.`)
