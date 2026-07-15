@@ -2,7 +2,7 @@ services:
   - type: web
     name: ecocash-api
     runtime: node
-    buildCommand: npm install && npx prisma generate && npx tsc
+    buildCommand: npm install && npx prisma migrate deploy && npx prisma generate && npx tsc
     startCommand: npm start
     healthCheckPath: /api/health
     rootDir: server

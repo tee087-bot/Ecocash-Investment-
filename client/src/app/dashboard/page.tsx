@@ -16,6 +16,7 @@ export default function DashboardPage() {
     activeInvestments: 0,
     currentBalance: 0,
     totalProfit: 0,
+    walletBalance: 0,
   })
   const [recentActivity, setRecentActivity] = useState<any[]>([])
   const [requestingProfit, setRequestingProfit] = useState(false)
@@ -30,7 +31,8 @@ export default function DashboardPage() {
   useEffect(() => {
     const fetchStats = async () => {
       try {
-        const { data } = await api.get('investments')
+        const [investmentResponse, referralResponse] = await Promise.all([api.get('investments'), api.get('referrals')])
+        const data = investmentResponse.data
         const userInvestments = data.data || []
         const activeInv = userInvestments.filter((inv: any) => 
           inv.status === 'PAYMENT_RECEIVED' || inv.status === 'ACTIVE_TRADE'
@@ -55,8 +57,9 @@ export default function DashboardPage() {
         setStats({
           totalDeposited,
           activeInvestments: activeCount,
-          currentBalance: activeInv.reduce((sum: number, inv: any) => sum + Number(inv.currentBalance), 0),
+          currentBalance: activeInv.reduce((sum: number, inv: any) => sum + Number(inv.currentBalance), 0) + Number(referralResponse.data.data?.walletBalance || 0),
           totalProfit,
+          walletBalance: Number(referralResponse.data.data?.walletBalance || 0),
         })
         setActiveInvestments(activeInv)
       } catch (err) {
@@ -183,6 +186,7 @@ export default function DashboardPage() {
             <div>
               <p className="text-sm text-white/80">Total Balance</p>
               <p className="mt-1 text-3xl font-bold">{formatCurrency(stats.currentBalance)}</p>
+              {stats.walletBalance > 0 && <p className="mt-1 text-xs text-cyan-100">Includes {formatCurrency(stats.walletBalance)} in approved referral rewards</p>}
             </div>
             <div className="rounded-2xl bg-white/20 p-3 backdrop-blur-sm">
               <Wallet className="h-7 w-7" />

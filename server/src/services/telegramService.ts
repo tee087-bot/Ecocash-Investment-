@@ -295,3 +295,14 @@ export const notifyKYCSubmission = async (userId: string, userName: string, self
     console.error('Failed to send KYC notification:', error)
   }
 }
+
+export const notifyReferralClaim = async (claimId: string, userName: string, email: string, amount: number, bonusCount: number): Promise<void> => {
+  const buttons = [
+    { text: '✅ Approve referral reward', callback_data: `approve_referral_claim_${claimId}` },
+    { text: '❌ Reject', callback_data: `reject_referral_claim_${claimId}` },
+  ]
+  await sendTelegramWithButtons(
+    `🎁 Referral reward claim\n\nUser: ${userName}\nEmail: ${email}\nAmount: $${amount.toFixed(2)}\nRewards: ${bonusCount}\n\nReview and approve the reward.`,
+    buttons,
+  )
+}

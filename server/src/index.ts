@@ -8,6 +8,7 @@ import withdrawalRoutes from './routes/withdrawals.js'
 import adminRoutes from './routes/admin.js'
 import telegramRoutes from './routes/telegram.js'
 import notificationRoutes from './routes/notifications.js'
+import referralRoutes from './routes/referrals.js'
 
 const app = express()
 const PORT = Number(process.env.PORT) || 5000
@@ -61,6 +62,7 @@ app.use('/api/withdrawals', withdrawalRoutes)
 app.use('/api/admin', adminRoutes)
 app.use('/api/telegram', telegramRoutes)
 app.use('/api/notifications', notificationRoutes)
+app.use('/api/referrals', referralRoutes)
 
 app.use((_req: Request, res: Response) => {
   res.status(404).json({ success: false, message: 'Route not found' })

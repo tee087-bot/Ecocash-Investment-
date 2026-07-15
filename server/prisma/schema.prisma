@@ -42,9 +42,54 @@ model User {
   deposits           Deposit[]
   withdrawals        Withdrawal[]
   notifications      Notification[]
-  telegramChatId     String?
+  telegramChatId      String?
+  walletBalance       Float     @default(0)
+  referralCode        String    @unique @default(uuid())
+  referredById        String?
+  referralBalance     Float     @default(0)
+  referralCycleCount  Int       @default(0)
+  referredBy        User?     @relation("UserReferrals", fields: [referredById], references: [id], onDelete: SetNull)
+  referrals         User[]    @relation("UserReferrals")
+  referralBonuses   ReferralBonus[] @relation("ReferralBonusBeneficiary")
+  referralClaims    ReferralClaim[]
 
   @@map("users")
+}
+
+model ReferralBonus {
+  id           String   @id @default(uuid())
+  referrerId   String
+  beneficiaryId String
+  beneficiary  User     @relation("ReferralBonusBeneficiary", fields: [beneficiaryId], references: [id], onDelete: Cascade)
+  amount       Float    @default(100)
+  status       String   @default("PENDING") // PENDING, CLAIM_REQUESTED, APPROVED, REJECTED
+  eligibleAt   DateTime?
+  claimId      String?
+  claim        ReferralClaim? @relation(fields: [claimId], references: [id], onDelete: SetNull)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([referrerId, beneficiaryId])
+  @@index([beneficiaryId, status])
+  @@index([referrerId])
+  @@map("referral_bonuses")
+}
+
+model ReferralClaim {
+  id          String   @id @default(uuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  amount      Float
+  bonusCount  Int
+  status      String   @default("PENDING") // PENDING, APPROVED, REJECTED
+  reviewedAt  DateTime?
+  reviewedBy  String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  bonuses     ReferralBonus[]
+
+  @@index([userId, status])
+  @@map("referral_claims")
 }
 
 model Investment {

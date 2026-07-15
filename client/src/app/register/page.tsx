@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { useAuth } from '@/context/AuthContext'
@@ -19,8 +19,14 @@ export default function RegisterPage() {
   const [showPassword, setShowPassword] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [referralCode, setReferralCode] = useState('')
   const router = useRouter()
   const { login } = useAuth()
+
+  useEffect(() => {
+    const code = new URLSearchParams(window.location.search).get('ref')
+    if (code) setReferralCode(code.trim().toUpperCase())
+  }, [])
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setFormData({ ...formData, [e.target.name]: e.target.value })
@@ -32,7 +38,7 @@ export default function RegisterPage() {
     setError('')
 
     try {
-      const { data } = await api.post('auth/register', formData)
+      const { data } = await api.post('auth/register', { ...formData, ...(referralCode ? { referralCode } : {}) })
       localStorage.setItem('token', data.data.token)
       localStorage.setItem('user', JSON.stringify({
         ...data.data.user,
@@ -68,6 +74,11 @@ export default function RegisterPage() {
           )}
 
           <form onSubmit={handleSubmit} className="space-y-2.5">
+            {referralCode && (
+              <div className="rounded-lg border border-cyan-400/30 bg-cyan-400/10 px-3 py-2 text-2xs text-cyan-100">
+                You were invited through a referral link. Complete your registration to help your referrer reach their reward goal.
+              </div>
+            )}
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="block text-2xs font-medium text-gray-400">First Name</label>

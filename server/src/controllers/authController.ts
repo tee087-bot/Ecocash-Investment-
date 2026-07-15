@@ -5,6 +5,7 @@ import { notifyNewUser, notifyKYCSubmission } from '../services/telegramService.
 import bcrypt from 'bcryptjs'
 import jwt from 'jsonwebtoken'
 import { z } from 'zod'
+import { randomBytes } from 'crypto'
 
 const registerSchema = z.object({
   email: z.string().email(),
@@ -12,6 +13,7 @@ const registerSchema = z.object({
   firstName: z.string().min(1),
   lastName: z.string().min(1),
   phone: z.string().optional(),
+  referralCode: z.string().trim().min(4).max(64).optional(),
 })
 
 const loginSchema = z.object({
@@ -23,7 +25,7 @@ export const register = async (req: AuthRequest, res: Response): Promise<void> =
   try {
     console.log('Register request body:', req.body)
     const validated = registerSchema.parse(req.body)
-    const { email, password, firstName, lastName, phone } = validated
+    const { email, password, firstName, lastName, phone, referralCode: suppliedReferralCode } = validated
 
     const existingUser = await prisma.user.findUnique({ where: { email } })
     console.log('Existing user check:', existingUser ? 'exists' : 'new')
@@ -35,28 +37,65 @@ export const register = async (req: AuthRequest, res: Response): Promise<void> =
     const hashedPassword = await bcrypt.hash(password, 10)
     console.log('Password hashed')
 
-    const user = await prisma.user.create({
-        data: {
-          email,
-          password: hashedPassword,
-          firstName,
-          lastName,
-          phone,
-          isVerified: false,
-          isActive: false,
-          kycStatus: 'PENDING',
-        },
-      select: {
-        id: true,
-        email: true,
-        firstName: true,
-        lastName: true,
-        phone: true,
-        isVerified: true,
-        role: true,
-        createdAt: true,
-      },
-    })
+    const referralCode = suppliedReferralCode?.toUpperCase()
+    const referrer = referralCode
+      ? await prisma.user.findUnique({ where: { referralCode } })
+      : null
+
+    if (referralCode && !referrer) {
+      res.status(400).json({ success: false, message: 'This referral link is invalid or has expired.' })
+      return
+    }
+
+    const createUser = async (attempt = 0): Promise<any> => {
+      const ownReferralCode = randomBytes(6).toString('hex').toUpperCase()
+      try {
+        return await prisma.$transaction(async (tx) => {
+          const createdUser = await tx.user.create({
+            data: {
+              email,
+              password: hashedPassword,
+              firstName,
+              lastName,
+              phone,
+              referralCode: ownReferralCode,
+              referredById: referrer?.id,
+              isVerified: false,
+              isActive: false,
+              kycStatus: 'PENDING',
+            },
+          })
+
+          if (referrer) {
+            // Each cycle accepts 20 registrations, each worth $5 to the referrer.
+            const incremented = await tx.user.updateMany({
+              where: { id: referrer.id, referralCycleCount: { lt: 20 } },
+              data: { referralCycleCount: { increment: 1 }, referralBalance: { increment: 5 } },
+            })
+            if (incremented.count) {
+              const updatedReferrer = await tx.user.findUnique({
+                where: { id: referrer.id },
+                select: { referralCycleCount: true },
+              })
+              if (updatedReferrer?.referralCycleCount === 20) {
+                await tx.referralBonus.create({
+                  data: { referrerId: referrer.id, beneficiaryId: referrer.id, eligibleAt: new Date() },
+                })
+              }
+            }
+          }
+
+          return createdUser
+        })
+      } catch (error: any) {
+        // An extremely unlikely referral-code collision is safe to retry.
+        if (error?.code === 'P2002' && attempt < 2) return createUser(attempt + 1)
+        throw error
+      }
+    }
+
+    const createdUser = await createUser()
+    const { password: _password, ...user } = createdUser
     console.log('User created:', user.id)
 
     if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_ADMIN_CHAT_ID) {

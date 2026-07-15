@@ -165,7 +165,15 @@ router.post('/webhook', async (req, res) => {
           return
         }
 
-        if (callbackData.startsWith('approve_user_')) {
+        if (callbackData.startsWith('approve_referral_claim_')) {
+          const claimId = callbackData.replace('approve_referral_claim_', '')
+          await answerCallback(callbackQueryId, 'Approving referral reward...')
+          await handleReferralClaim(claimId, chatId, true)
+        } else if (callbackData.startsWith('reject_referral_claim_')) {
+          const claimId = callbackData.replace('reject_referral_claim_', '')
+          await answerCallback(callbackQueryId, 'Rejecting referral reward...')
+          await handleReferralClaim(claimId, chatId, false)
+        } else if (callbackData.startsWith('approve_user_')) {
           const userId = callbackData.replace('approve_user_', '')
           await answerCallback(callbackQueryId)
           await handleApproveUser(userId, chatId)
@@ -242,6 +250,48 @@ const sendMessage = async (chatId: number, text: string, options?: TelegramBot.S
     await bot.sendMessage(chatId, text, options)
   } catch (error) {
     console.error('Send message error:', error)
+  }
+}
+
+const handleReferralClaim = async (claimId: string, adminChatId: number, approved: boolean) => {
+  try {
+    const claim = await prisma.$transaction(async (tx) => {
+      const result = await tx.referralClaim.updateMany({
+        where: { id: claimId, status: 'PENDING' },
+        data: { status: approved ? 'APPROVED' : 'REJECTED', reviewedAt: new Date(), reviewedBy: String(adminChatId) },
+      })
+      if (!result.count) return null
+
+      const reviewedClaim = await tx.referralClaim.findUnique({ where: { id: claimId }, include: { user: true } })
+      await tx.referralBonus.updateMany({
+        where: { claimId, status: 'CLAIM_REQUESTED' },
+        data: { status: approved ? 'APPROVED' : 'REJECTED' },
+      })
+      if (approved && reviewedClaim) {
+        await tx.user.update({
+          where: { id: reviewedClaim.userId },
+          data: {
+            walletBalance: { increment: reviewedClaim.amount },
+            referralBalance: 0,
+            referralCycleCount: 0,
+          },
+        })
+      }
+      return reviewedClaim
+    })
+    if (!claim) {
+      await sendMessage(adminChatId, 'ℹ️ This referral claim has already been reviewed.')
+      return
+    }
+    if (claim.user.telegramChatId) {
+      await sendMessage(Number(claim.user.telegramChatId), approved
+        ? `🎉 Your $${claim.amount.toFixed(2)} referral reward was approved and added to your dashboard balance. Your next 20-referral cycle has started.`
+        : `Your referral reward claim for $${claim.amount.toFixed(2)} was not approved. Please contact support for details.`)
+    }
+    await sendMessage(adminChatId, approved ? '✅ Referral reward approved.' : '✅ Referral reward rejected.')
+  } catch (error) {
+    console.error('Referral claim review error:', error)
+    await sendMessage(adminChatId, '❌ Failed to review referral claim.')
   }
 }
 
